@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+
+id = "genscene"
+name = "GenScene"
+version = "0.1.0"
+tagline = "AI-driven instructional scene building tool"
+maintainer = "GenScene Contributors"
+type = "add-on"
+
+# Blender 5.0 Extension platform tags
+tags = ["3D View", "Import-Export", "Scene"]
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+# No external wheels needed — uses only stdlib urllib
