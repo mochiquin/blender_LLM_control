@@ -1,0 +1,36 @@
+# === 安全与隐私 (CRITICAL) ===
+# 屏蔽包含 API Key 的配置文件（实际密钥应通过环境变量注入，见 config_template.py）
+genscene/config.py
+.env
+secrets.json
+
+# === Python 缓存与环境 ===
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.python-version
+
+# === Blender 临时文件 ===
+*.blend1
+*.blend2
+*.blend@
+*.quit.blend
+*.autosave.blend
+*.crash.txt
+
+# === 操作系统与 IDE ===
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# === 本地测试数据 ===
+tests/local_test_results/
+*.log
+
+# === 打包产物 ===
+*.zip

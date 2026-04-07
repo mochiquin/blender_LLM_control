@@ -61,6 +61,11 @@ def _resolve_asset_path(asset_id: str) -> tuple[str, str] | None:
                 if stem.lower() == asset_id.lower():
                     return os.path.join(dirpath, fname), stem
 
+    # #region agent log
+    import json as _j, time as _t
+    with open("/Users/silin/Repo/blender_LLM_control/.cursor/debug-446955.log", "a") as _f:
+        _f.write(_j.dumps({"sessionId":"446955","hypothesisId":"A","location":"spawn.py:_resolve_asset_path:exit","message":"resolve result","data":{"asset_id":asset_id,"result":None,"in_objects":asset_id in bpy.data.objects},"timestamp":int(_t.time()*1000)}) + "\n")
+    # #endregion
     return None
 
 
@@ -118,6 +123,11 @@ def spawn_asset(
         result = _resolve_asset_path(asset_id)
         if result is None:
             print(f"[GenScene] spawn_asset: could not locate asset '{asset_id}'")
+            # #region agent log
+            import json as _j, time as _t
+            with open("/Users/silin/Repo/blender_LLM_control/.cursor/debug-446955.log", "a") as _f:
+                _f.write(_j.dumps({"sessionId":"446955","hypothesisId":"A-B","location":"spawn.py:spawn_asset:none_return","message":"spawn_asset returning None","data":{"asset_id":asset_id},"timestamp":int(_t.time()*1000)}) + "\n")
+            # #endregion
             return None
 
         blend_path, obj_name = result

@@ -4,9 +4,10 @@ Blender 5.0+ compatible.
 
 Each object record includes its bounding-box extremes (x_min…z_max) in
 world space so the LLM can reason about spatial relationships:
-  - "place on top of table"  →  z = table["bbox"]["z_max"]
+  - "place on top of table"  →  z = table["surface_z"]
   - "place underneath shelf" →  z = shelf["bbox"]["z_min"] - obj_height
   - "scatter around barrel"  →  use x_min/x_max, y_min/y_max as area bounds
+  - "center on table"        →  x, y = table["center_xy"]
 
 Blender 5.0 note:
   obj.bound_box returns local-space corners computed from the object's stored
@@ -43,9 +44,34 @@ def _world_bbox(
     ys = [v.y for v in corners]
     zs = [v.z for v in corners]
     return {
-        "x_min": min(xs), "x_max": max(xs),
-        "y_min": min(ys), "y_max": max(ys),
-        "z_min": min(zs), "z_max": max(zs),
+        "x_min": round(min(xs), 4), "x_max": round(max(xs), 4),
+        "y_min": round(min(ys), 4), "y_max": round(max(ys), 4),
+        "z_min": round(min(zs), 4), "z_max": round(max(zs), 4),
+    }
+
+
+def _object_record(obj: bpy.types.Object, depsgraph: bpy.types.Depsgraph) -> dict:
+    """Build the full record dict for one mesh object."""
+    bbox = _world_bbox(obj, depsgraph)
+    return {
+        # identity
+        "name": obj.name,
+        # world origin
+        "location": [round(v, 4) for v in obj.location],
+        # size along each axis
+        "dimensions": [round(v, 4) for v in obj.dimensions],
+        # orientation
+        "rotation_euler": [round(v, 6) for v in obj.rotation_euler],
+        # full bounding box
+        "bbox": bbox,
+        # ── LLM-friendly shortcuts ──────────────────────────────────────────
+        # Top surface Z — use this as the Z for "place on top of <object>"
+        "surface_z": bbox["z_max"],
+        # Horizontal centre — use as (x, y) for "centre on top of <object>"
+        "center_xy": [
+            round((bbox["x_min"] + bbox["x_max"]) / 2, 4),
+            round((bbox["y_min"] + bbox["y_max"]) / 2, 4),
+        ],
     }
 
 
@@ -58,28 +84,65 @@ def serialize_scene(selected_only: bool = False) -> str:
 
     Returns:
         A JSON array string, one element per mesh object, each containing:
-        name, location, dimensions, rotation_euler (radians), and bbox.
+        name, location, dimensions, rotation_euler (radians), bbox,
+        surface_z, and center_xy.
     """
     depsgraph = bpy.context.evaluated_depsgraph_get()
+    candidates = (
+        list(bpy.context.selected_objects)
+        if selected_only
+        else list(bpy.context.scene.objects)
+    )
 
-    if selected_only:
-        candidates = list(bpy.context.selected_objects)
-    else:
-        candidates = list(bpy.context.scene.objects)
+    result: list[dict] = [
+        _object_record(obj, depsgraph)
+        for obj in candidates
+        if obj.type == "MESH"
+    ]
+    return json.dumps(result, indent=2)
 
-    result: list[dict] = []
+
+def serialize_for_prompt(selected_only: bool = False) -> str:
+    """Return a compact scene description optimised for AI prompt injection.
+
+    Compared with serialize_scene(), this format:
+    - omits rotation (rarely needed for placement tasks)
+    - uses a one-object-per-line layout to save tokens
+    - keeps surface_z and center_xy as top-level fields for readability
+
+    Typical usage in a system prompt::
+
+        scene = serialize_for_prompt()
+        prompt = f"Scene objects:\\n{scene}\\n\\nTask: place a bucket on the table."
+
+    Returns a JSON array string (compact, one line per object).
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    candidates = (
+        list(bpy.context.selected_objects)
+        if selected_only
+        else list(bpy.context.scene.objects)
+    )
+
+    compact: list[dict] = []
     for obj in candidates:
-        if obj.type != 'MESH':
+        if obj.type != "MESH":
             continue
-        result.append({
+        bbox = _world_bbox(obj, depsgraph)
+        compact.append({
             "name": obj.name,
-            "location": [round(v, 4) for v in obj.location],
-            "dimensions": [round(v, 4) for v in obj.dimensions],
-            "rotation_euler": [round(v, 6) for v in obj.rotation_euler],
-            "bbox": {k: round(v, 4) for k, v in _world_bbox(obj, depsgraph).items()},
+            "dimensions": [round(v, 3) for v in obj.dimensions],
+            "surface_z": bbox["z_max"],
+            "center_xy": [
+                round((bbox["x_min"] + bbox["x_max"]) / 2, 3),
+                round((bbox["y_min"] + bbox["y_max"]) / 2, 3),
+            ],
+            "bbox": bbox,
         })
 
-    return json.dumps(result, indent=2)
+    # One record per line — easier to read in a prompt window
+    lines = [json.dumps(rec, separators=(", ", ": ")) for rec in compact]
+    return "[\n" + ",\n".join(lines) + "\n]"
 
 
 def serialize_selected() -> str:
@@ -89,4 +152,9 @@ def serialize_selected() -> str:
 
 def print_scene_json() -> None:
     """Print the full scene JSON to the Blender console (debugging aid)."""
-    print(serialize_scene(selected_only=False))
+    print(serialize_scene())
+
+
+def print_prompt_json() -> None:
+    """Print the compact prompt-ready JSON to the Blender console."""
+    print(serialize_for_prompt())

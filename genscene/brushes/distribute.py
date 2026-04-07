@@ -175,6 +175,11 @@ def scatter_cluster(
             rotation=(0.0, 0.0, rz),
             scale=(scale_var, scale_var, scale_var),
         )
+        # #region agent log
+        import json as _j, time as _t
+        with open("/Users/silin/Repo/blender_LLM_control/.cursor/debug-446955.log", "a") as _f:
+            _f.write(_j.dumps({"sessionId":"446955","hypothesisId":"B-C","location":"distribute.py:scatter_cluster:spawn_result","message":"spawn result per instance","data":{"asset_id":asset_id,"obj_is_none":obj is None},"timestamp":int(_t.time()*1000)}) + "\n")
+        # #endregion
         if obj is None:
             continue
         if snap_to_ground:

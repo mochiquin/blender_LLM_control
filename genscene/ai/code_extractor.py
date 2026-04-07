@@ -52,15 +52,57 @@ EXEC_GLOBALS: dict = {
 }
 
 
-# ── Code cleaning ─────────────────────────────────────────────────────────────
+# ── Security: explicit blocklist scan ────────────────────────────────────────
+#
+# These patterns are scanned BEFORE exec() — even though __builtins__ is
+# sandboxed, rejecting them here gives a clean, readable error instead of a
+# cryptic NameError inside exec().
 
-# Lines that look like markdown fences, pure comments, or blank
-_NOISE_PATTERNS = re.compile(
-    r"^\s*```.*$"           # ```python or ``` lines
-    r"|^\s*#.*$"            # full-line comments
-    r"|^\s*$",              # blank lines
-    re.MULTILINE,
-)
+_DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bos\s*\.\s*(remove|unlink|rmdir|system|popen|exec)\b"),
+     "filesystem/shell access via `os`"),
+    (re.compile(r"\bsubprocess\b"),
+     "subprocess execution"),
+    (re.compile(r"\b__import__\s*\("),
+     "dynamic import via __import__"),
+    (re.compile(r"\bimport\s+os\b"),
+     "import os"),
+    (re.compile(r"\bimport\s+subprocess\b"),
+     "import subprocess"),
+    (re.compile(r"\bopen\s*\("),
+     "file open()"),
+    (re.compile(r"\beval\s*\("),
+     "nested eval()"),
+    (re.compile(r"\bexec\s*\("),
+     "nested exec()"),
+    (re.compile(r"\bshutil\b"),
+     "shutil filesystem operations"),
+    (re.compile(r"\bsocket\b"),
+     "raw socket access"),
+]
+
+
+def check_safety(code: str) -> None:
+    """Scan code for dangerous patterns and raise ValueError if any are found.
+
+    Called automatically by run_with_retry() before exec().  Can also be used
+    standalone for pre-flight validation.
+
+    Args:
+        code: The cleaned Python code string to inspect.
+
+    Raises:
+        ValueError: With a description of the matched dangerous pattern.
+    """
+    for pattern, description in _DANGEROUS_PATTERNS:
+        if pattern.search(code):
+            raise ValueError(
+                f"[GenScene] Security check failed: code contains {description}.\n"
+                f"Blocked before execution."
+            )
+
+
+# ── Code cleaning ─────────────────────────────────────────────────────────────
 
 # Allowed call tokens (anything the LLM is supposed to output)
 _ALLOWED_CALLS = {
@@ -134,6 +176,10 @@ def run_with_retry(
     code = clean_code(raw_code)
     messages = list(original_messages) if original_messages else None
     last_error = ""
+
+    # Security gate — runs once on the cleaned code; raises immediately if
+    # dangerous patterns are detected so we never reach exec().
+    check_safety(code)
 
     for attempt in range(max_retries + 1):
         try:
