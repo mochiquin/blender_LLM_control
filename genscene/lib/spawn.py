@@ -1,10 +1,22 @@
 """
 lib/spawn.py — Asset spawning and ground placement.
 
-spawn_asset() implements instance-reuse: the first call appends the mesh from
+spawn_asset() implements instance-reuse: the first call appends the object from
 the asset library; subsequent calls for the same asset_id create linked
 duplicates that share the same mesh data block, keeping memory usage low and
 avoiding the .001 / .002 name pollution that a plain wm.append produces.
+
+Asset resolution order
+──────────────────────
+1. Already in scene (bpy.data.objects) → duplicate in-place.
+2. Absolute .blend path passed directly.
+3. AssetIndex lookup:
+   a. Exact normalised object-name match inside any .blend file.
+   b. Keyword-overlap fuzzy match.
+4. Filename-stem scan of ASSET_LIBRARY_PATH as last resort.
+
+Raises RuntimeError (instead of returning None) when the asset cannot be
+located, so the LLM self-correction loop receives a clear error message.
 """
 
 from __future__ import annotations
@@ -19,38 +31,31 @@ from .ground import get_ground_z
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _resolve_asset_path(asset_id: str) -> tuple[str, str] | None:
-    """Return (blend_filepath, object_name) for the given asset_id.
+    """Return (blend_filepath, object_name) for the given asset_id, or None.
 
-    asset_id may be:
-      - An absolute path to a .blend file, e.g. "/path/to/barrel.blend"
-      - A bare name that will be looked up via asset_index (if available)
-      - A name already present in bpy.data.objects (triggering instant reuse)
-
-    Returns None if the asset cannot be located.
+    object_name is the exact name of the Blender object inside the .blend file.
     """
     from .. import config
 
-    # Already in the scene — no file lookup needed
+    # 1. Already in the scene — caller handles duplication, no file needed
     if asset_id in bpy.data.objects:
-        return None  # caller handles reuse
+        return None  # handled by instance-reuse path in spawn_asset
 
-    # Absolute .blend path passed directly
+    # 2. Absolute .blend path passed directly
     if os.path.isfile(asset_id) and asset_id.endswith(".blend"):
         obj_name = os.path.splitext(os.path.basename(asset_id))[0]
         return asset_id, obj_name
 
-    # Try the asset index for semantic names
+    # 3. AssetIndex: searches by object names *inside* each .blend file
     try:
         from ..ai.asset_index import AssetIndex
-        idx = AssetIndex.get()
-        match = idx.find(asset_id)
+        match = AssetIndex.get().find(asset_id)
         if match:
-            obj_name = os.path.splitext(os.path.basename(match))[0]
-            return match, obj_name
-    except Exception:
+            return match  # already (filepath, obj_name)
+    except Exception:  # noqa: BLE001
         pass
 
-    # Last resort: look in the configured library root for a filename match
+    # 4. Last resort: filename-stem scan of the library root
     lib_root = config.ASSET_LIBRARY_PATH
     if lib_root and os.path.isdir(lib_root):
         for dirpath, _dirs, files in os.walk(lib_root):
@@ -61,21 +66,16 @@ def _resolve_asset_path(asset_id: str) -> tuple[str, str] | None:
                 if stem.lower() == asset_id.lower():
                     return os.path.join(dirpath, fname), stem
 
-    # #region agent log
-    import json as _j, time as _t
-    with open("/Users/silin/Repo/blender_LLM_control/.cursor/debug-446955.log", "a") as _f:
-        _f.write(_j.dumps({"sessionId":"446955","hypothesisId":"A","location":"spawn.py:_resolve_asset_path:exit","message":"resolve result","data":{"asset_id":asset_id,"result":None,"in_objects":asset_id in bpy.data.objects},"timestamp":int(_t.time()*1000)}) + "\n")
-    # #endregion
     return None
 
 
 def _append_object_from_blend(blend_path: str, obj_name: str) -> bpy.types.Object | None:
-    """Append the first mesh Object found in blend_path/Object/ directory."""
+    """Append the named object from blend_path into the current scene."""
     with bpy.data.libraries.load(blend_path, link=False) as (src, dst):
-        # Try exact name first, then fall back to first available object
         if obj_name in src.objects:
             dst.objects = [obj_name]
         elif src.objects:
+            # Fall back to the first available object if exact name is missing
             dst.objects = [src.objects[0]]
         else:
             return None
@@ -95,55 +95,53 @@ def spawn_asset(
     location: tuple[float, float, float] = (0.0, 0.0, 0.0),
     rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
-) -> bpy.types.Object | None:
+) -> bpy.types.Object:
     """Spawn an asset by id and return the resulting Blender object.
 
-    If an object with asset_id already exists in the scene it is
-    linked-duplicated (shared mesh data) instead of re-appended, which avoids
-    both memory waste and the Blender naming suffix problem (.001, .002 …).
-
     Args:
-        asset_id: Logical name, absolute .blend path, or semantic label.
+        asset_id: Object name, filename stem, or absolute .blend path.
         location: World-space XYZ position.
         rotation: XYZ Euler rotation in radians.
         scale: XYZ scale factors.
 
     Returns:
-        The new (or duplicated) object, or None on failure.
+        The spawned (or duplicated) Blender object.
+
+    Raises:
+        RuntimeError: If the asset cannot be located or appended.
     """
     # ── Instance reuse path ───────────────────────────────────────────────────
     if asset_id in bpy.data.objects:
         src = bpy.data.objects[asset_id]
         obj = src.copy()
-        obj.data = src.data  # shared mesh data block
+        obj.data = src.data  # shared mesh data block — avoids memory duplication
         bpy.context.collection.objects.link(obj)
 
     # ── Fresh append path ─────────────────────────────────────────────────────
     else:
         result = _resolve_asset_path(asset_id)
         if result is None:
-            print(f"[GenScene] spawn_asset: could not locate asset '{asset_id}'")
-            # #region agent log
-            import json as _j, time as _t
-            with open("/Users/silin/Repo/blender_LLM_control/.cursor/debug-446955.log", "a") as _f:
-                _f.write(_j.dumps({"sessionId":"446955","hypothesisId":"A-B","location":"spawn.py:spawn_asset:none_return","message":"spawn_asset returning None","data":{"asset_id":asset_id},"timestamp":int(_t.time()*1000)}) + "\n")
-            # #endregion
-            return None
+            raise RuntimeError(
+                f"[GenScene] spawn_asset: asset '{asset_id}' not found.\n"
+                f"Check the asset library path in the GenScene preferences, or use a "
+                f"valid asset_id from the catalogue shown in the system prompt."
+            )
 
         blend_path, obj_name = result
         obj = _append_object_from_blend(blend_path, obj_name)
         if obj is None:
-            print(f"[GenScene] spawn_asset: append failed for '{asset_id}'")
-            return None
+            raise RuntimeError(
+                f"[GenScene] spawn_asset: found '{blend_path}' for asset '{asset_id}' "
+                f"but the file contains no appendable objects."
+            )
 
-        # Normalize name so future calls recognise it for reuse
+        # Normalise the object name so future calls can reuse the instance
         obj.name = asset_id
 
     obj.location = location
     obj.rotation_euler = Euler(rotation)
     obj.scale = scale
 
-    # Deselect all, then select the new object and make it active
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
@@ -152,29 +150,41 @@ def spawn_asset(
 
 
 def place_on_ground(
-    obj: bpy.types.Object,
+    obj: bpy.types.Object | str | None,
     ground_obj: bpy.types.Object | None = None,
 ) -> None:
-    """Move obj so that its lowest point rests on the surface below it.
+    """Move obj so that its lowest bounding-box point rests on the ground surface.
 
     Uses get_ground_z() to ray-cast the surface at the object's XY position,
     then offsets Z so the bounding-box bottom sits exactly on that surface.
 
-    Implementation note: we intentionally use obj.matrix_world (not
-    eval_obj.matrix_world from the depsgraph) because this function is
-    frequently called immediately after spawn_asset sets obj.location.
-    For objects with no parents or constraints, obj.matrix_world reflects
-    the new location instantly; the depsgraph snapshot (eval_obj) can lag
-    behind by one evaluation cycle and would return a stale z_bottom.
-
     Args:
-        obj: The object to place.
+        obj: The object to place.  Accepts:
+               • bpy.types.Object — the normal case (return value of spawn_asset)
+               • str              — object name; resolved via bpy.data.objects
+               • None             — silently skipped (spawn_asset failure guard)
         ground_obj: Reserved for future use (per-object ground override).
     """
+    # Guard: None means spawn_asset failed upstream
+    if obj is None:
+        print("[GenScene] place_on_ground: received None — skipping.")
+        return
+
+    # Tolerance: LLM sometimes passes the name string instead of the handle
+    if isinstance(obj, str):
+        name = obj
+        obj = bpy.data.objects.get(name)
+        if obj is None:
+            print(f"[GenScene] place_on_ground: no object named '{name}' — skipping.")
+            return
+
+    # Final type guard in case something unexpected was passed
+    if not hasattr(obj, "location"):
+        print(f"[GenScene] place_on_ground: expected Object, got {type(obj).__name__} — skipping.")
+        return
+
     x, y = obj.location.x, obj.location.y
 
-    # obj.matrix_world updates synchronously when obj.location changes
-    # (no depsgraph flush needed for parentless, constraint-free objects)
     corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
     z_bottom = min(c.z for c in corners)
     z_origin = obj.location.z

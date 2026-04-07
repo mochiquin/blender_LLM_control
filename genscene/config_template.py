@@ -15,7 +15,7 @@ import os
 API_KEY: str = os.environ.get("GENSCENE_API_KEY", "在这里填入你的 API Key")
 
 # "openai" 或 "anthropic"
-API_PROVIDER: str = os.environ.get("GENSCENE_PROVIDER", "openai")
+API_PROVIDER: str = "ollama"
 
 # ── 模型选择 ──────────────────────────────────────────────────────────────────
 OPENAI_MODEL: str = "gpt-4o"

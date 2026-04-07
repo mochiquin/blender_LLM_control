@@ -41,12 +41,14 @@ spawn_asset(asset_id, location, rotation=(0,0,0), scale=(1,1,1))
   location  : (x, y, z) float tuple — world-space position in metres
   rotation  : (rx, ry, rz) float tuple — XYZ Euler in RADIANS (optional)
   scale     : (sx, sy, sz) float tuple (optional, default (1,1,1))
-  Returns the created object (you can ignore the return value).
+  ★ Returns a Blender Object handle — ALWAYS assign it: obj = spawn_asset(...)
 
 place_on_ground(obj)
   Move obj so its lowest point rests on the surface directly beneath it.
   Call this AFTER spawn_asset when you want ground-snapping.
-  obj : the return value of spawn_asset()
+  obj : ★ MUST be the variable returned by spawn_asset() — NOT a string name
+  ✗ WRONG:  place_on_ground("table")
+  ✓ CORRECT: t = spawn_asset("table", (0,0,0)); place_on_ground(t)
 
 apply_physics_drop(objs, frames=60)
   Run a short rigid-body simulation so objs fall and settle naturally.
@@ -69,11 +71,13 @@ scatter_cluster(asset_id, center=(0,0,0), count=8, radius=3.0, snap_to_ground=Tr
 ────────────────────────── OUTPUT RULES ──────────────────────────────
 
 • Output ONLY Python function calls, one per line.
-• Do NOT write: imports, comments, markdown (no ```), variable declarations,
-  print(), class/def blocks, or ANY prose.
-• You MAY use temporary variables to pass objects between calls, e.g.:
-      b = spawn_asset("barrel", (1, 2, 0))
-      place_on_ground(b)
+• Do NOT write: imports, comments, markdown (no ```), print(), class/def blocks,
+  or ANY prose.
+• ALWAYS assign spawn_asset() to a variable; ALWAYS pass that variable (not a
+  string) to place_on_ground() or apply_physics_drop():
+      b = spawn_asset("barrel", (1, 2, 0))   # ✓
+      place_on_ground(b)                      # ✓  — b is the object handle
+      place_on_ground("barrel")              # ✗  — string, will fail
 • If placing multiple objects with physics, collect them and call
   apply_physics_drop once at the end.
 • Coordinates are in Blender world units (metres).  The scene Y axis points

@@ -27,9 +27,28 @@ class APIError(RuntimeError):
     """Raised when the LLM API returns an error or an unexpected response."""
 
 
+# ── Preferences helper ────────────────────────────────────────────────────────
+
+def _prefs():
+    """Return the GenScene AddonPreferences object, or None if unavailable.
+
+    Preferences win over config.py values so users can configure everything
+    from Edit > Preferences > Add-ons > GenScene without editing any files.
+    """
+    try:
+        import bpy
+        # __package__ is "genscene.ai" (dev) or "bl_ext.user_default.genscene.ai"
+        # (Extension).  Strip the last component to get the parent addon ID.
+        addon_id = __package__.rsplit(".", 1)[0]
+        addon = bpy.context.preferences.addons.get(addon_id)
+        return addon.preferences if addon else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-_TIMEOUT_SECONDS = 30  # long enough for large completions; short enough to not freeze Blender
+_TIMEOUT_SECONDS = 120  # Ollama on first-run can be slow; raise from 30 s
 
 
 def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
@@ -46,18 +65,22 @@ def _post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[st
         raise APIError(f"Network error reaching {url}: {exc.reason}") from exc
 
 
-def _call_openai(messages: list[dict[str, str]], model: str) -> str:
-    if not config.API_KEY:
-        raise APIError("GENSCENE_API_KEY is not set. Add it to config.py or your environment.")
-
+def _call_openai(messages: list[dict[str, str]], model: str, api_key: str = "") -> str:
+    key = api_key or config.API_KEY
+    if not key:
+        raise APIError(
+            "API key is not set.\n"
+            "Go to Edit > Preferences > Add-ons > GenScene and enter your key,\n"
+            "or set the GENSCENE_API_KEY environment variable."
+        )
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.API_KEY}",
+        "Authorization": f"Bearer {key}",
     }
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.2,  # low temperature for deterministic function calls
+        "temperature": 0.2,
     }
     response = _post(config.OPENAI_ENDPOINT, headers, payload)
     try:
@@ -66,11 +89,14 @@ def _call_openai(messages: list[dict[str, str]], model: str) -> str:
         raise APIError(f"Unexpected OpenAI response shape: {response}") from exc
 
 
-def _call_anthropic(messages: list[dict[str, str]], model: str) -> str:
-    if not config.API_KEY:
-        raise APIError("GENSCENE_API_KEY is not set. Add it to config.py or your environment.")
-
-    # Anthropic expects system message separated from user/assistant turns
+def _call_anthropic(messages: list[dict[str, str]], model: str, api_key: str = "") -> str:
+    key = api_key or config.API_KEY
+    if not key:
+        raise APIError(
+            "API key is not set.\n"
+            "Go to Edit > Preferences > Add-ons > GenScene and enter your key,\n"
+            "or set the GENSCENE_API_KEY environment variable."
+        )
     system_content = ""
     filtered: list[dict[str, str]] = []
     for msg in messages:
@@ -81,7 +107,7 @@ def _call_anthropic(messages: list[dict[str, str]], model: str) -> str:
 
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": config.API_KEY,
+        "x-api-key": key,
         "anthropic-version": config.ANTHROPIC_VERSION,
     }
     payload: dict[str, Any] = {
@@ -100,23 +126,21 @@ def _call_anthropic(messages: list[dict[str, str]], model: str) -> str:
         raise APIError(f"Unexpected Anthropic response shape: {response}") from exc
 
 
-def _call_ollama(messages: list[dict[str, str]], model: str) -> str:
+def _call_ollama(messages: list[dict[str, str]], model: str, url: str = "") -> str:
     """Call a locally-running Ollama instance via its /api/chat endpoint.
 
-    Ollama response shape (stream=false):
-        {"message": {"role": "assistant", "content": "..."}, ...}
-
-    No API key is required.  Ollama must already be running:
-        ollama serve          # in a terminal, or via the Ollama desktop app
+    No API key required.  Ollama must be running:
+        ollama serve          # or via the Ollama desktop app
     """
+    endpoint = url or config.OLLAMA_ENDPOINT
     headers = {"Content-Type": "application/json"}
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "stream": False,   # get a single JSON response, not a stream
+        "stream": False,
         "options": {"temperature": 0.2},
     }
-    response = _post(config.OLLAMA_ENDPOINT, headers, payload)
+    response = _post(endpoint, headers, payload)
     try:
         return response["message"]["content"]
     except (KeyError, TypeError) as exc:
@@ -132,29 +156,42 @@ def call_llm(
 ) -> str:
     """Send a list of chat messages to the configured LLM and return its reply.
 
+    Priority for each setting: call argument > Blender preferences > config.py.
+
     Args:
         messages: List of {"role": "system"|"user"|"assistant", "content": str}.
-        model: Override the default model from config.py.
+        model: Override the model (skips preferences and config.py).
         provider: "openai", "anthropic", or "ollama".
-                  Defaults to config.API_PROVIDER.
 
     Returns:
         The assistant's reply as a plain string.
 
     Raises:
-        APIError: On network failure or unexpected API response.
+        APIError: On auth failure, network error, or unexpected response.
     """
-    prov = (provider or config.API_PROVIDER).lower()
+    prefs = _prefs()
+
+    prov = (
+        provider
+        or (prefs.provider if prefs else None)
+        or config.API_PROVIDER
+    ).lower()
 
     if prov == "openai":
         mdl = model or config.OPENAI_MODEL
-        return _call_openai(messages, mdl)
+        key = (prefs.api_key if prefs else "") or config.API_KEY
+        return _call_openai(messages, mdl, api_key=key)
+
     elif prov == "anthropic":
         mdl = model or config.ANTHROPIC_MODEL
-        return _call_anthropic(messages, mdl)
+        key = (prefs.api_key if prefs else "") or config.API_KEY
+        return _call_anthropic(messages, mdl, api_key=key)
+
     elif prov == "ollama":
-        mdl = model or config.OLLAMA_MODEL
-        return _call_ollama(messages, mdl)
+        mdl = model or (prefs.ollama_model if prefs else None) or config.OLLAMA_MODEL
+        url = (prefs.ollama_url if prefs else "") or config.OLLAMA_ENDPOINT
+        return _call_ollama(messages, mdl, url=url)
+
     else:
         raise APIError(f"Unknown provider '{prov}'. Use 'openai', 'anthropic', or 'ollama'.")
 
